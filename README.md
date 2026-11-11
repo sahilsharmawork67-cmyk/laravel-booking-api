@@ -1,5 +1,9 @@
 # Laravel Booking API
 
+[![Tests](https://github.com/sahilsharmawork67-cmyk/laravel-booking-api/actions/workflows/tests.yml/badge.svg)](https://github.com/sahilsharmawork67-cmyk/laravel-booking-api/actions/workflows/tests.yml)
+![PHP](https://img.shields.io/badge/php-8.3%20%7C%208.4-777bb4) ![Laravel](https://img.shields.io/badge/laravel-13-ff2d20)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A small Laravel REST API for hotel room bookings that guarantees a room can never be double-booked, even under concurrent requests.
 
 ## Features
