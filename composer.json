@@ -1,9 +1,13 @@
 {
-    "$schema": "https://getcomposer.org/schema.json",
-    "name": "laravel/laravel",
+    "name": "sahilsharma/laravel-booking-api",
     "type": "project",
-    "description": "The skeleton application for the Laravel framework.",
-    "keywords": ["laravel", "framework"],
+    "description": "A small Laravel REST API for room bookings with transactional double-booking protection.",
+    "keywords": [
+        "laravel",
+        "api",
+        "booking",
+        "rest"
+    ],
     "license": "MIT",
     "require": {
         "php": "^8.3",
@@ -79,6 +83,9 @@
         "allow-plugins": {
             "pestphp/pest-plugin": true,
             "php-http/discovery": true
+        },
+        "platform": {
+            "php": "8.3.0"
         }
     },
     "minimum-stability": "stable",

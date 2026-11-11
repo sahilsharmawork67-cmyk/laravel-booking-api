@@ -1,58 +1,127 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Laravel Booking API
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+A small Laravel REST API for hotel room bookings that guarantees a room can never be double-booked, even under concurrent requests.
 
-## About Laravel
+## Features
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+- List hotels and rooms, with an availability filter for a date range
+- Create, view and cancel bookings
+- Overlap protection using half-open date ranges inside a locked database transaction
+- Price computed server-side (nights x nightly rate, stored in integer cents)
+- Form Request validation and API Resource responses
+- Feature tests covering every overlap case, plus GitHub Actions CI on PHP 8.3 and 8.4
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+**Stack:** PHP 8.3+, Laravel 13, SQLite (any Laravel-supported database works), PHPUnit 12, Laravel Pint.
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+## Design note: preventing double bookings
 
-## Learning Laravel
+**Half-open ranges.** A stay is treated as `[check_in, check_out)`: the guest occupies the nights starting on `check_in` up to, but not including, `check_out`. Two stays overlap when `existing.check_in < new.check_out AND existing.check_out > new.check_in`. This means a guest can check in on the same day the previous guest checks out, without special-case code. Cancelled bookings are excluded from the check.
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+**Row lock in a transaction.** A plain "check, then insert" has a race: two requests can both see the room as free and both insert. [`CreateBooking`](app/Actions/CreateBooking.php) opens a transaction and first runs `SELECT ... FOR UPDATE` (`lockForUpdate()`) on the **room** row. A second request for the same room blocks on that lock until the first commits, then its overlap check sees the new booking and returns `409 Conflict`. The room row is locked, not the existing bookings, because when a room has no bookings yet there are no rows to lock. Requests for different rooms do not wait on each other.
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+On MySQL and PostgreSQL this is a real row lock. SQLite ignores `FOR UPDATE`, but it allows only one writer at a time, so a racing request fails with a "database is locked" error instead of double-booking. That is fine for local development; use MySQL or PostgreSQL in production to get a clean `409`.
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+Dates are stored as plain `Y-m-d` strings via a small [`DateOnly`](app/Casts/DateOnly.php) cast, so the overlap comparison behaves the same on every database driver.
 
-## Agentic Development
+## API
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+All endpoints are under `/api` and return JSON. Money is in integer cents. Dates use `YYYY-MM-DD`.
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/api/hotels` | List hotels with room counts (paginated) |
+| `GET` | `/api/rooms` | List rooms. Optional `check_in` and `check_out` (both or neither) return only rooms free for that range. Optional `hotel_id` |
+| `POST` | `/api/bookings` | Create a booking. `201` on success, `409` if the dates are taken, `422` on validation errors |
+| `GET` | `/api/bookings/{id}` | Show a booking |
+| `POST` | `/api/bookings/{id}/cancel` | Cancel a booking. `409` if already cancelled |
+
+### Examples
 
 ```bash
-composer require laravel/boost --dev
+# Rooms free from 12 to 14 June (two nights)
+curl "http://localhost:8000/api/rooms?check_in=2030-06-12&check_out=2030-06-14"
 
-php artisan boost:install
+# Create a booking
+curl -X POST http://localhost:8000/api/bookings \
+  -H "Accept: application/json" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "room_id": 1,
+        "guest_name": "Sam Sample",
+        "guest_email": "sam@example.com",
+        "check_in": "2030-06-12",
+        "check_out": "2030-06-14"
+      }'
+
+# Show and cancel it
+curl http://localhost:8000/api/bookings/1
+curl -X POST http://localhost:8000/api/bookings/1/cancel -H "Accept: application/json"
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+Example response for `POST /api/bookings`:
 
-## Contributing
+```json
+{
+  "data": {
+    "id": 1,
+    "status": "confirmed",
+    "guest_name": "Sam Sample",
+    "guest_email": "sam@example.com",
+    "check_in": "2030-06-12",
+    "check_out": "2030-06-14",
+    "nights": 2,
+    "total_cents": 24000,
+    "room": {
+      "id": 1,
+      "name": "Standard Double",
+      "capacity": 2,
+      "nightly_price_cents": 12000,
+      "hotel": { "id": 1, "name": "Seaside Inn", "city": "Port Harbor" }
+    },
+    "created_at": "2030-06-01T09:00:00+00:00"
+  }
+}
+```
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+A conflicting booking returns:
 
-## Code of Conduct
+```json
+{ "message": "The room is already booked for some or all of the requested dates." }
+```
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+## Setup
 
-## Security Vulnerabilities
+Requires PHP 8.3+ with the `pdo_sqlite` extension, and Composer.
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+```bash
+git clone <repository-url> laravel-booking-api
+cd laravel-booking-api
+composer install
+cp .env.example .env
+php artisan key:generate
+touch database/database.sqlite
+php artisan migrate --seed
+php artisan serve
+```
+
+The seeder creates three fictional hotels (Seaside Inn, Maple Lodge, Hilltop Suites) with three rooms each, plus one sample booking.
+
+## Running tests
+
+```bash
+php artisan test
+```
+
+Tests run against an in-memory SQLite database and freeze the clock where dates matter. To check code style:
+
+```bash
+vendor/bin/pint --test
+```
+
+## Out of scope
+
+This is a focused demo, so a few things a production service would need are intentionally left out: authentication (anyone who knows a booking ID can view or cancel it, so real use would need auth or unguessable booking references), payments, rate limiting, and guest-count vs room-capacity checks.
 
 ## License
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+[MIT](LICENSE)
